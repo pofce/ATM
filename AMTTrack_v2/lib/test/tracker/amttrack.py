@@ -14,6 +14,7 @@ from lib.test.tracker.data_utils import Preprocessor
 from lib.utils.box_ops import clip_box
 from lib.utils.ce_utils import generate_mask_cond, generate_mask_z
 from lib.models.layers.thor import THOR_Wrapper
+from lib.test.tracker.motion import KalmanMotionModel
 
 
 class AMTTrack(BaseTracker):
@@ -80,10 +81,32 @@ class AMTTrack(BaseTracker):
         self.state = info['init_bbox']
         self.frame_id = idx
 
+        # motion model — initialised here so it resets cleanly per sequence
+        self.use_motion_model = getattr(self.cfg.TEST, 'MOTION_MODEL', False)
+        self.motion_model = KalmanMotionModel()
+        self.motion_model.update(self.state)
+
+        # blind period diagnostics
+        self.blind_frames_count = 0   # consecutive frames below score threshold
+        self.score_ema = None         # reset rolling average per sequence
+
 
     def track(self, image, event_image, info: dict = None):
         self.frame_id += 1
         H, W, _ = image.shape
+
+        # blind period detection: score dropped significantly below recent rolling average
+        # This adapts to per-sequence score levels instead of using an absolute threshold
+        prev_score = (info['previous_output'].get('pred_score', 1.0)
+                      if info and info.get('previous_output') else 1.0)
+        if self.score_ema is None:
+            self.score_ema = prev_score
+        self.score_ema = 0.95 * self.score_ema + 0.05 * prev_score
+        prev_blind_count = (info['previous_output'].get('blind_frames', 0)
+                            if info and info.get('previous_output') else 0)
+        blind = (self.use_motion_model
+                 and prev_blind_count >= self.cfg.TEST.KALMAN_MIN_BLIND
+                 and prev_score < self.score_ema * self.cfg.TEST.KALMAN_DROP_RATIO)
         x_patch_arr, event_x_patch_arr, resize_factor, x_amask_arr = sample_target(im=image, eim=event_image,
             target_bb=self.state, search_area_factor=self.params.search_factor, output_sz=self.params.search_size)   # (x1, y1, w, h)
         search = self.preprocessor.process(x_patch_arr, x_amask_arr).tensors
@@ -111,7 +134,23 @@ class AMTTrack(BaseTracker):
         pred_box = (pred_boxes.mean(dim=0) * self.params.search_size / resize_factor).tolist()  # (cx, cy, w, h) [0,1]
         # get the final box result
         self.state = clip_box(self.map_box_back(pred_box, resize_factor), H, W, margin=10)
-        
+
+        # blind period counter — tracks consecutive low-confidence frames
+        current_score = response.max().item()
+        if current_score < self.cfg.TEST.SCORE_THRESHOLD:
+            self.blind_frames_count += 1
+        else:
+            self.blind_frames_count = 0
+
+        # Hook B — motion model injection
+        if self.use_motion_model:
+            if blind:
+                # network output is unreliable: replace with Kalman prediction
+                self.state = clip_box(self.motion_model.predict_only(), H, W, margin=10)
+            else:
+                # network output is reliable: feed it to the filter as observation
+                self.motion_model.update(self.state)
+
         ##################################################################################
         # extract the tracking result
         tracking_result_arr, tracking_result_event_arr, resize_factor, tracking_result_amask_arr = sample_target(
@@ -150,8 +189,9 @@ class AMTTrack(BaseTracker):
         return {"target_bbox": self.state,
                 "prediction_image": prediction_image,
                 'prediction_event_image': prediction_event_image,
-                "response": response,   
-                "pred_score": response.max().item(),  
+                "response": response,
+                "pred_score": current_score,
+                "blind_frames": self.blind_frames_count,
                 }
    
     def get_count(self):

@@ -116,8 +116,11 @@ cfg.TEST.SHORTTERM_LIBRARY_NUMS = 6
 cfg.TEST.LONGTERM_LIBRARY_NUMS = 16 
 cfg.TEST.SAMPLE_INTERVAL = 5 
 cfg.TEST.UPDATE_INTERVAL = 10
-cfg.TEST.LOWER_BOUND = 0.35 
+cfg.TEST.LOWER_BOUND = 0.35
 cfg.TEST.SCORE_THRESHOLD = 0.7
+cfg.TEST.MOTION_MODEL = False
+cfg.TEST.KALMAN_MIN_BLIND = 5         # consecutive low-score frames before Kalman takes over
+cfg.TEST.KALMAN_DROP_RATIO = 0.6      # score must drop to <60% of EMA to trigger Kalman
 
 
 def _edict2dict(dest_dict, src_edict):

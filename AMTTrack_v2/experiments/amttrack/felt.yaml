@@ -99,6 +99,8 @@ TEST:
   SAMPLE_INTERVAL: 20 
   UPDATE_INTERVAL: 40
   #############################
-  LOWER_BOUND: 0.35 
+  LOWER_BOUND: 0.35
   SCORE_THRESHOLD: 0.7
+  #############################
+  MOTION_MODEL: True
   #############################

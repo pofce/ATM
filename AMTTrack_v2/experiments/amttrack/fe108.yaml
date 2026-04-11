@@ -99,6 +99,10 @@ TEST:
   SAMPLE_INTERVAL: 20  
   UPDATE_INTERVAL: 40
   #############################
-  LOWER_BOUND: 0.35 
+  LOWER_BOUND: 0.35
   SCORE_THRESHOLD: 0.7
+  #############################
+  MOTION_MODEL: False
+  KALMAN_MIN_BLIND: 5       # consecutive frames below threshold before Kalman takes over
+  KALMAN_DROP_RATIO: 0.6    # score must drop to <60% of rolling avg to trigger Kalman
   #############################
