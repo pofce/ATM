@@ -94,6 +94,22 @@ def _save_tracker_output(seq: Sequence, tracker: Tracker, output: dict):
             blind_file = '{}_blind_frames.txt'.format(base_results_path)
             save_score(blind_file, data)
 
+        elif key == 'genuine_blind_frames':
+            genuine_blind_file = '{}_genuine_blind_frames.txt'.format(base_results_path)
+            save_score(genuine_blind_file, data)
+
+        elif key == 'event_density':
+            save_score('{}_event_density.txt'.format(base_results_path), data)
+
+        elif key == 'event_density_ema':
+            save_score('{}_event_density_ema.txt'.format(base_results_path), data)
+
+        elif key == 'event_spike':
+            save_score('{}_event_spike.txt'.format(base_results_path), data)
+
+        elif key == 'pred_score':
+            save_score('{}_pred_score.txt'.format(base_results_path), data)
+
         elif key == 'time':
             if isinstance(data[0], dict):
                 data_dict = _convert_dict(data)

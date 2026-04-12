@@ -102,5 +102,12 @@ TEST:
   LOWER_BOUND: 0.35
   SCORE_THRESHOLD: 0.7
   #############################
-  MOTION_MODEL: True
+  MOTION_MODEL: False
+  KALMAN_MIN_BLIND: 5
+  KALMAN_MAX_BLIND: 20
+  KALMAN_SEARCH_SCALE_MAX: 3.0
+  KALMAN_DROP_RATIO: 0.6
+  #############################
+  DENSITY_EMA_ALPHA: 0.05
+  SPIKE_RATIO: 2.0
   #############################

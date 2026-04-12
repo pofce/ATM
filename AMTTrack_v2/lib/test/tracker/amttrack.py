@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 from lib.models.amttrack import build_amttrack
 from lib.test.tracker.basetracker import BaseTracker
 import torch
@@ -90,6 +91,7 @@ class AMTTrack(BaseTracker):
         self.blind_frames_count = 0    # consecutive frames below score threshold (diagnostic)
         self.genuine_blind_count = 0   # consecutive frames where score crashed vs EMA (drives Kalman)
         self.score_ema = None          # reset rolling average per sequence
+        self.event_density_ema = None  # reset event density baseline per sequence
 
 
     def track(self, image, event_image, info: dict = None):
@@ -128,6 +130,24 @@ class AMTTrack(BaseTracker):
 
         x_patch_arr, event_x_patch_arr, resize_factor, x_amask_arr = sample_target(im=image, eim=event_image,
             target_bb=self.state, search_area_factor=effective_search_factor, output_sz=self.params.search_size)   # (x1, y1, w, h)
+
+        # --- event density spike detection (diagnostic) ---
+        # Mean absolute intensity of the raw event crop (uint8, [0,255]) before any normalization
+        event_density_raw = float(np.abs(event_x_patch_arr.astype(np.float32)).mean())
+        EMA_ALPHA = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
+        SPIKE_RATIO = getattr(self.cfg.TEST, 'SPIKE_RATIO', 2.0)
+        prev_ema = self.event_density_ema
+        if self.event_density_ema is None:
+            self.event_density_ema = event_density_raw
+        else:
+            self.event_density_ema = (EMA_ALPHA * event_density_raw
+                                      + (1 - EMA_ALPHA) * self.event_density_ema)
+        # compare against prev_ema (before this frame contaminated the baseline)
+        event_spike = (prev_ema is not None
+                       and event_density_raw > SPIKE_RATIO * prev_ema
+                       and prev_ema > 0)
+        # --- end event density ---
+
         search = self.preprocessor.process(x_patch_arr, x_amask_arr).tensors
         event_search = self.preprocessor.process(event_x_patch_arr, x_amask_arr).tensors
 
@@ -212,6 +232,9 @@ class AMTTrack(BaseTracker):
                 "pred_score": current_score,
                 "blind_frames": self.blind_frames_count,
                 "genuine_blind_frames": genuine_blind_count,
+                "event_density": event_density_raw,
+                "event_density_ema": self.event_density_ema,
+                "event_spike": int(event_spike),
                 }
    
     def get_count(self):
