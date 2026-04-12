@@ -87,28 +87,47 @@ class AMTTrack(BaseTracker):
         self.motion_model.update(self.state)
 
         # blind period diagnostics
-        self.blind_frames_count = 0   # consecutive frames below score threshold
-        self.score_ema = None         # reset rolling average per sequence
+        self.blind_frames_count = 0    # consecutive frames below score threshold (diagnostic)
+        self.genuine_blind_count = 0   # consecutive frames where score crashed vs EMA (drives Kalman)
+        self.score_ema = None          # reset rolling average per sequence
 
 
     def track(self, image, event_image, info: dict = None):
         self.frame_id += 1
         H, W, _ = image.shape
 
-        # blind period detection: score dropped significantly below recent rolling average
-        # This adapts to per-sequence score levels instead of using an absolute threshold
+        # genuine_blind_count: counts consecutive frames where the score genuinely
+        # crashed relative to its rolling average — drives both Kalman and search widening.
+        # Resets as soon as the score recovers above the DROP_RATIO threshold.
+        # This is distinct from blind_frames_count (raw sub-threshold counter for diagnostics)
+        # which never resets on sequences with uniformly low scores.
         prev_score = (info['previous_output'].get('pred_score', 1.0)
                       if info and info.get('previous_output') else 1.0)
         if self.score_ema is None:
             self.score_ema = prev_score
         self.score_ema = 0.95 * self.score_ema + 0.05 * prev_score
-        prev_blind_count = (info['previous_output'].get('blind_frames', 0)
-                            if info and info.get('previous_output') else 0)
+        prev_genuine_blind = (info['previous_output'].get('genuine_blind_frames', 0)
+                              if info and info.get('previous_output') else 0)
+        is_crash = prev_score < self.score_ema * self.cfg.TEST.KALMAN_DROP_RATIO
+        genuine_blind_count = prev_genuine_blind + 1 if is_crash else 0
+
         blind = (self.use_motion_model
-                 and prev_blind_count >= self.cfg.TEST.KALMAN_MIN_BLIND
-                 and prev_score < self.score_ema * self.cfg.TEST.KALMAN_DROP_RATIO)
+                 and self.cfg.TEST.KALMAN_MIN_BLIND <= genuine_blind_count <= self.cfg.TEST.KALMAN_MAX_BLIND)
+
+        # Adaptive search widening: only when genuinely crashed past the Kalman window
+        if self.use_motion_model and genuine_blind_count > self.cfg.TEST.KALMAN_MAX_BLIND:
+            frames_past_max = genuine_blind_count - self.cfg.TEST.KALMAN_MAX_BLIND
+            scale = min(
+                1.0 + (frames_past_max / self.cfg.TEST.KALMAN_MAX_BLIND)
+                      * (self.cfg.TEST.KALMAN_SEARCH_SCALE_MAX - 1.0),
+                self.cfg.TEST.KALMAN_SEARCH_SCALE_MAX
+            )
+            effective_search_factor = self.params.search_factor * scale
+        else:
+            effective_search_factor = self.params.search_factor
+
         x_patch_arr, event_x_patch_arr, resize_factor, x_amask_arr = sample_target(im=image, eim=event_image,
-            target_bb=self.state, search_area_factor=self.params.search_factor, output_sz=self.params.search_size)   # (x1, y1, w, h)
+            target_bb=self.state, search_area_factor=effective_search_factor, output_sz=self.params.search_size)   # (x1, y1, w, h)
         search = self.preprocessor.process(x_patch_arr, x_amask_arr).tensors
         event_search = self.preprocessor.process(event_x_patch_arr, x_amask_arr).tensors
 
@@ -192,6 +211,7 @@ class AMTTrack(BaseTracker):
                 "response": response,
                 "pred_score": current_score,
                 "blind_frames": self.blind_frames_count,
+                "genuine_blind_frames": genuine_blind_count,
                 }
    
     def get_count(self):

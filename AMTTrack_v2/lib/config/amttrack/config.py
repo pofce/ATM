@@ -120,6 +120,8 @@ cfg.TEST.LOWER_BOUND = 0.35
 cfg.TEST.SCORE_THRESHOLD = 0.7
 cfg.TEST.MOTION_MODEL = False
 cfg.TEST.KALMAN_MIN_BLIND = 5         # consecutive low-score frames before Kalman takes over
+cfg.TEST.KALMAN_MAX_BLIND = 20        # Kalman turns off after this many frames to prevent drift
+cfg.TEST.KALMAN_SEARCH_SCALE_MAX = 3.0  # search_factor scales up to this multiple after Kalman expires
 cfg.TEST.KALMAN_DROP_RATIO = 0.6      # score must drop to <60% of EMA to trigger Kalman
 
 
