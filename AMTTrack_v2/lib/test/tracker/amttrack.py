@@ -212,15 +212,21 @@ class AMTTrack(BaseTracker):
         # ── Phase 2: failure detection → update failure_count for next frame ─────
         _failure_signal    = getattr(self.cfg.TEST, 'FAILURE_SIGNAL', 'norm_displacement')
         _failure_threshold = getattr(self.cfg.TEST, 'FAILURE_THRESHOLD', 0.5)
+        _dvs_bg_level      = getattr(self.cfg.TEST, 'DVS_BG_LEVEL', 255.0)
+        _burst_threshold   = getattr(self.cfg.TEST, 'DVS_BURST_THRESHOLD', 150.0)
 
         if _failure_signal == 'norm_displacement':
-            failure_detected = norm_displacement > _failure_threshold
+            primary_failure = norm_displacement > _failure_threshold
         elif _failure_signal == 'response_entropy':
-            failure_detected = response_entropy > _failure_threshold
+            primary_failure = response_entropy > _failure_threshold
         elif _failure_signal == 'displacement_ema':
-            failure_detected = self.displacement_ema > _failure_threshold
+            primary_failure = self.displacement_ema > _failure_threshold
         else:
-            failure_detected = False
+            primary_failure = False
+
+        dvs_activity   = max(0.0, _dvs_bg_level - event_density_raw)
+        burst_detected = dvs_activity > _burst_threshold
+        failure_detected = primary_failure or burst_detected
 
         if failure_detected:
             self.failure_count += 1
@@ -276,6 +282,8 @@ class AMTTrack(BaseTracker):
                 "displacement_ema": self.displacement_ema,
                 "response_entropy": response_entropy,
                 "failure_count": self.failure_count,
+                "dvs_activity": dvs_activity,
+                "burst_detected": int(burst_detected),
                 }
    
     def get_count(self):

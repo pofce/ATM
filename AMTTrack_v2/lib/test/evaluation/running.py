@@ -125,6 +125,12 @@ def _save_tracker_output(seq: Sequence, tracker: Tracker, output: dict):
         elif key == 'failure_count':
             save_score('{}_failure_count.txt'.format(base_results_path), data)
 
+        elif key == 'dvs_activity':
+            save_score('{}_dvs_activity.txt'.format(base_results_path), data)
+
+        elif key == 'burst_detected':
+            save_score('{}_burst_detected.txt'.format(base_results_path), data)
+
         elif key == 'time':
             if isinstance(data[0], dict):
                 data_dict = _convert_dict(data)

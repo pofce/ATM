@@ -120,7 +120,8 @@ class Tracker:
         output = {'target_bbox': [], 'time': [], 'blind_frames': [], 'genuine_blind_frames': [],
                   'event_density': [], 'event_density_ema': [], 'event_spike': [], 'pred_score': [],
                   'box_displacement': [], 'norm_displacement': [], 'displacement_ema': [],
-                  'response_entropy': [], 'failure_count': []}
+                  'response_entropy': [], 'failure_count': [],
+                  'dvs_activity': [], 'burst_detected': []}
 
         def _store_outputs(tracker_out: dict, defaults=None):
             defaults = {} if defaults is None else defaults

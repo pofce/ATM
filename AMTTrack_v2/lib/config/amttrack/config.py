@@ -128,6 +128,8 @@ cfg.TEST.SPIKE_RATIO = 2.0           # multiplier above EMA to declare a flicker
 cfg.TEST.DISP_EMA_ALPHA = 0.1        # EMA decay for normalised displacement
 cfg.TEST.FAILURE_SIGNAL = 'norm_displacement'  # signal used to trigger Kalman: norm_displacement | response_entropy | displacement_ema
 cfg.TEST.FAILURE_THRESHOLD = 0.5     # threshold on the chosen failure signal
+cfg.TEST.DVS_BG_LEVEL = 255.0        # DVS background pixel value (white = 255)
+cfg.TEST.DVS_BURST_THRESHOLD = 150.0 # dvs_activity = BG_LEVEL - event_density_raw; above this = burst
 cfg.TEST.ADAPTIVE_MODALITY = False   # Phase 3: adaptive RGB/event weighting
 cfg.TEST.EVENT_WEIGHT = 0.5          # Phase 3: base event stream weight
 cfg.TEST.FAILURE_EVENT_WEIGHT = 0.7  # Phase 3: event weight during failure

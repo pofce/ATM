@@ -114,6 +114,8 @@ TEST:
   DISP_EMA_ALPHA: 0.1
   FAILURE_SIGNAL: norm_displacement
   FAILURE_THRESHOLD: 0.5
+  DVS_BG_LEVEL: 255.0
+  DVS_BURST_THRESHOLD: 150.0
   #############################
   ADAPTIVE_MODALITY: False
   EVENT_WEIGHT: 0.5
