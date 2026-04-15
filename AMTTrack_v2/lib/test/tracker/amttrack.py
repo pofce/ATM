@@ -87,22 +87,25 @@ class AMTTrack(BaseTracker):
         self.motion_model = KalmanMotionModel()
         self.motion_model.update(self.state)
 
-        # blind period diagnostics
+        # diagnostic / failure-signal state — all reset per sequence
         self.blind_frames_count = 0    # consecutive frames below score threshold (diagnostic)
-        self.genuine_blind_count = 0   # consecutive frames where score crashed vs EMA (drives Kalman)
-        self.score_ema = None          # reset rolling average per sequence
-        self.event_density_ema = None  # reset event density baseline per sequence
+        self.genuine_blind_count = 0   # consecutive frames where score crashed vs EMA (search widening)
+        self.score_ema = None
+        self.event_density_ema = None
+        self.prev_state = None         # state from previous frame (for displacement)
+        self.displacement_ema = None   # EMA of normalised displacement
+        self.failure_count = 0         # consecutive failure-signal frames (drives Kalman)
 
 
     def track(self, image, event_image, info: dict = None):
         self.frame_id += 1
         H, W, _ = image.shape
 
-        # genuine_blind_count: counts consecutive frames where the score genuinely
-        # crashed relative to its rolling average — drives both Kalman and search widening.
-        # Resets as soon as the score recovers above the DROP_RATIO threshold.
-        # This is distinct from blind_frames_count (raw sub-threshold counter for diagnostics)
-        # which never resets on sequences with uniformly low scores.
+        # ── Phase 2: Kalman blind flag uses failure_count from the previous frame ──
+        blind = (self.use_motion_model
+                 and self.cfg.TEST.KALMAN_MIN_BLIND <= self.failure_count <= self.cfg.TEST.KALMAN_MAX_BLIND)
+
+        # ── Search widening: driven by score-EMA genuine_blind_count (unchanged) ──
         prev_score = (info['previous_output'].get('pred_score', 1.0)
                       if info and info.get('previous_output') else 1.0)
         if self.score_ema is None:
@@ -113,10 +116,6 @@ class AMTTrack(BaseTracker):
         is_crash = prev_score < self.score_ema * self.cfg.TEST.KALMAN_DROP_RATIO
         genuine_blind_count = prev_genuine_blind + 1 if is_crash else 0
 
-        blind = (self.use_motion_model
-                 and self.cfg.TEST.KALMAN_MIN_BLIND <= genuine_blind_count <= self.cfg.TEST.KALMAN_MAX_BLIND)
-
-        # Adaptive search widening: only when genuinely crashed past the Kalman window
         if self.use_motion_model and genuine_blind_count > self.cfg.TEST.KALMAN_MAX_BLIND:
             frames_past_max = genuine_blind_count - self.cfg.TEST.KALMAN_MAX_BLIND
             scale = min(
@@ -129,66 +128,106 @@ class AMTTrack(BaseTracker):
             effective_search_factor = self.params.search_factor
 
         x_patch_arr, event_x_patch_arr, resize_factor, x_amask_arr = sample_target(im=image, eim=event_image,
-            target_bb=self.state, search_area_factor=effective_search_factor, output_sz=self.params.search_size)   # (x1, y1, w, h)
+            target_bb=self.state, search_area_factor=effective_search_factor, output_sz=self.params.search_size)
 
-        # --- event density spike detection (diagnostic) ---
-        # Mean absolute intensity of the raw event crop (uint8, [0,255]) before any normalization
+        # ── Event density (diagnostic, on raw uint8 crop before normalisation) ──
         event_density_raw = float(np.abs(event_x_patch_arr.astype(np.float32)).mean())
-        EMA_ALPHA = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
-        SPIKE_RATIO = getattr(self.cfg.TEST, 'SPIKE_RATIO', 2.0)
-        prev_ema = self.event_density_ema
+        _ema_alpha   = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
+        _spike_ratio = getattr(self.cfg.TEST, 'SPIKE_RATIO', 2.0)
+        _prev_density_ema = self.event_density_ema
         if self.event_density_ema is None:
             self.event_density_ema = event_density_raw
         else:
-            self.event_density_ema = (EMA_ALPHA * event_density_raw
-                                      + (1 - EMA_ALPHA) * self.event_density_ema)
-        # compare against prev_ema (before this frame contaminated the baseline)
-        event_spike = (prev_ema is not None
-                       and event_density_raw > SPIKE_RATIO * prev_ema
-                       and prev_ema > 0)
-        # --- end event density ---
+            self.event_density_ema = (_ema_alpha * event_density_raw
+                                      + (1 - _ema_alpha) * self.event_density_ema)
+        event_spike = (_prev_density_ema is not None
+                       and event_density_raw > _spike_ratio * _prev_density_ema
+                       and _prev_density_ema > 0)
 
+        # ── Network inference ────────────────────────────────────────────────────
         search = self.preprocessor.process(x_patch_arr, x_amask_arr).tensors
         event_search = self.preprocessor.process(event_x_patch_arr, x_amask_arr).tensors
 
         with torch.no_grad():
-            if len(info['previous_output']) == 0:   
+            if len(info['previous_output']) == 0:
                 self.dynamic_zi, self.dynamic_ze = self.thor_wrapper.update(self.static_zi, self.static_ze, 1)
             else:
                 self.dynamic_zi, self.dynamic_ze = self.thor_wrapper.update(
                                                         info['previous_output']['prediction_image'],
-                                                        info['previous_output']['prediction_event_image'], 
+                                                        info['previous_output']['prediction_event_image'],
                                                         info['previous_output']['pred_score'])
             out_dict = self.network.inference(
-                static_zi=self.static_zi, static_ze=self.static_ze, 
-                dynamic_zi=self.dynamic_zi, dynamic_ze=self.dynamic_ze, 
+                static_zi=self.static_zi, static_ze=self.static_ze,
+                dynamic_zi=self.dynamic_zi, dynamic_ze=self.dynamic_ze,
                 xi=search, xe=event_search)
-            
-        # add hann windows
-        pred_score_map = out_dict['score_map']  
-        response = self.output_window * pred_score_map 
-        pred_boxes = self.network.box_head.cal_bbox(response, out_dict['size_map'], out_dict['offset_map']) 
-        pred_boxes = pred_boxes.view(-1, 4) 
-        # Baseline: Take the mean of all pred boxes as the final result
-        pred_box = (pred_boxes.mean(dim=0) * self.params.search_size / resize_factor).tolist()  # (cx, cy, w, h) [0,1]
-        # get the final box result
+
+        # ── Response → score → state ─────────────────────────────────────────────
+        pred_score_map = out_dict['score_map']
+        response = self.output_window * pred_score_map
+        pred_boxes = self.network.box_head.cal_bbox(response, out_dict['size_map'], out_dict['offset_map'])
+        pred_boxes = pred_boxes.view(-1, 4)
+        pred_box = (pred_boxes.mean(dim=0) * self.params.search_size / resize_factor).tolist()
         self.state = clip_box(self.map_box_back(pred_box, resize_factor), H, W, margin=10)
 
-        # blind period counter — tracks consecutive low-confidence frames
         current_score = response.max().item()
         if current_score < self.cfg.TEST.SCORE_THRESHOLD:
             self.blind_frames_count += 1
         else:
             self.blind_frames_count = 0
 
-        # Hook B — motion model injection
+        # ── Response entropy ─────────────────────────────────────────────────────
+        resp_flat = response.view(-1).float()
+        resp_flat = resp_flat - resp_flat.min()
+        resp_prob = resp_flat / (resp_flat.sum() + 1e-8)
+        response_entropy = float(-(resp_prob * (resp_prob + 1e-8).log()).sum().item())
+
+        # ── Motion model injection (uses blind from top of frame) ────────────────
         if self.use_motion_model:
             if blind:
-                # network output is unreliable: replace with Kalman prediction
                 self.state = clip_box(self.motion_model.predict_only(), H, W, margin=10)
             else:
-                # network output is reliable: feed it to the filter as observation
                 self.motion_model.update(self.state)
+
+        # ── Box displacement (computed after motion model so we track actual output) ─
+        curr_cx = self.state[0] + self.state[2] / 2
+        curr_cy = self.state[1] + self.state[3] / 2
+        target_diag = (self.state[2] ** 2 + self.state[3] ** 2) ** 0.5 + 1e-6
+
+        if self.prev_state is None:
+            box_displacement = 0.0
+            norm_displacement = 0.0
+        else:
+            prev_cx = self.prev_state[0] + self.prev_state[2] / 2
+            prev_cy = self.prev_state[1] + self.prev_state[3] / 2
+            box_displacement = float(((curr_cx - prev_cx) ** 2 + (curr_cy - prev_cy) ** 2) ** 0.5)
+            norm_displacement = box_displacement / target_diag
+
+        _disp_ema_alpha = getattr(self.cfg.TEST, 'DISP_EMA_ALPHA', 0.1)
+        if self.displacement_ema is None:
+            self.displacement_ema = norm_displacement
+        else:
+            self.displacement_ema = (_disp_ema_alpha * norm_displacement
+                                     + (1 - _disp_ema_alpha) * self.displacement_ema)
+
+        # ── Phase 2: failure detection → update failure_count for next frame ─────
+        _failure_signal    = getattr(self.cfg.TEST, 'FAILURE_SIGNAL', 'norm_displacement')
+        _failure_threshold = getattr(self.cfg.TEST, 'FAILURE_THRESHOLD', 0.5)
+
+        if _failure_signal == 'norm_displacement':
+            failure_detected = norm_displacement > _failure_threshold
+        elif _failure_signal == 'response_entropy':
+            failure_detected = response_entropy > _failure_threshold
+        elif _failure_signal == 'displacement_ema':
+            failure_detected = self.displacement_ema > _failure_threshold
+        else:
+            failure_detected = False
+
+        if failure_detected:
+            self.failure_count += 1
+        else:
+            self.failure_count = 0
+
+        self.prev_state = list(self.state)
 
         ##################################################################################
         # extract the tracking result
@@ -208,18 +247,15 @@ class AMTTrack(BaseTracker):
                 cv2.imwrite(save_path, image_BGR)
             else:
                 self.visdom.register((image, info['gt_bbox'].tolist(), self.state), 'Tracking', 1, 'Tracking')
-
                 self.visdom.register(torch.from_numpy(x_patch_arr).permute(2, 0, 1), 'image', 1, 'search_region')
                 self.visdom.register(torch.from_numpy(self.z_patch_arr).permute(2, 0, 1), 'image', 1, 'template')
                 self.visdom.register(pred_score_map.view(self.feat_sz, self.feat_sz), 'heatmap', 1, 'score_map')
                 self.visdom.register((pred_score_map * self.output_window).view(self.feat_sz, self.feat_sz), 'heatmap', 1, 'score_map_hann')
-
                 if 'removed_indexes_s' in out_dict and out_dict['removed_indexes_s']:
                     removed_indexes_s = out_dict['removed_indexes_s']
                     removed_indexes_s = [removed_indexes_s_i.cpu().numpy() for removed_indexes_s_i in removed_indexes_s]
                     masked_search = gen_visualization(x_patch_arr, removed_indexes_s)
                     self.visdom.register(torch.from_numpy(masked_search).permute(2, 0, 1), 'image', 1, 'masked_search')
-
                 while self.pause_mode:
                     if self.step:
                         self.step = False
@@ -227,7 +263,7 @@ class AMTTrack(BaseTracker):
 
         return {"target_bbox": self.state,
                 "prediction_image": prediction_image,
-                'prediction_event_image': prediction_event_image,
+                "prediction_event_image": prediction_event_image,
                 "response": response,
                 "pred_score": current_score,
                 "blind_frames": self.blind_frames_count,
@@ -235,6 +271,11 @@ class AMTTrack(BaseTracker):
                 "event_density": event_density_raw,
                 "event_density_ema": self.event_density_ema,
                 "event_spike": int(event_spike),
+                "box_displacement": box_displacement,
+                "norm_displacement": norm_displacement,
+                "displacement_ema": self.displacement_ema,
+                "response_entropy": response_entropy,
+                "failure_count": self.failure_count,
                 }
    
     def get_count(self):
