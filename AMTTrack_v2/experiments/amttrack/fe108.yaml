@@ -103,8 +103,15 @@ TEST:
   SCORE_THRESHOLD: 0.7
   #############################
   MOTION_MODEL: False
-  KALMAN_MIN_BLIND: 5       # consecutive frames below threshold before Kalman takes over
-  KALMAN_MAX_BLIND: 20      # Kalman turns off after this many frames to prevent drift
-  KALMAN_SEARCH_SCALE_MAX: 3.0  # search_factor scales up to this multiple after Kalman expires
-  KALMAN_DROP_RATIO: 0.6    # score must drop to <60% of rolling avg to trigger Kalman
+  KALMAN_MAX_BLIND: 20
+  KALMAN_SEARCH_SCALE_MAX: 3.0
+  #############################
+  DENSITY_EMA_ALPHA: 0.05
+  DISP_EMA_ALPHA: 0.1
+  DVS_BG_LEVEL: 255.0
+  DVS_BURST_THRESHOLD: 150.0
+  #############################
+  ADAPTIVE_MODALITY: False
+  EVENT_WEIGHT: 0.5
+  FAILURE_EVENT_WEIGHT: 0.7
   #############################
