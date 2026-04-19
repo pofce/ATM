@@ -103,17 +103,11 @@ TEST:
   SCORE_THRESHOLD: 0.7
   #############################
   MOTION_MODEL: False
-  KALMAN_MIN_BLIND: 5
   KALMAN_MAX_BLIND: 20
   KALMAN_SEARCH_SCALE_MAX: 3.0
-  KALMAN_DROP_RATIO: 0.6
   #############################
   DENSITY_EMA_ALPHA: 0.05
-  SPIKE_RATIO: 2.0
-  #############################
   DISP_EMA_ALPHA: 0.1
-  FAILURE_SIGNAL: norm_displacement
-  FAILURE_THRESHOLD: 0.5
   DVS_BG_LEVEL: 255.0
   DVS_BURST_THRESHOLD: 150.0
   #############################

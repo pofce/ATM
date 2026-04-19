@@ -91,21 +91,13 @@ def _save_tracker_output(seq: Sequence, tracker: Tracker, output: dict):
                 save_score(bbox_file, data)
 
         if key == 'blind_frames':
-            blind_file = '{}_blind_frames.txt'.format(base_results_path)
-            save_score(blind_file, data)
-
-        elif key == 'genuine_blind_frames':
-            genuine_blind_file = '{}_genuine_blind_frames.txt'.format(base_results_path)
-            save_score(genuine_blind_file, data)
+            save_score('{}_blind_frames.txt'.format(base_results_path), data)
 
         elif key == 'event_density':
             save_score('{}_event_density.txt'.format(base_results_path), data)
 
         elif key == 'event_density_ema':
             save_score('{}_event_density_ema.txt'.format(base_results_path), data)
-
-        elif key == 'event_spike':
-            save_score('{}_event_spike.txt'.format(base_results_path), data)
 
         elif key == 'pred_score':
             save_score('{}_pred_score.txt'.format(base_results_path), data)
@@ -122,14 +114,14 @@ def _save_tracker_output(seq: Sequence, tracker: Tracker, output: dict):
         elif key == 'response_entropy':
             save_score('{}_response_entropy.txt'.format(base_results_path), data)
 
-        elif key == 'failure_count':
-            save_score('{}_failure_count.txt'.format(base_results_path), data)
-
         elif key == 'dvs_activity':
             save_score('{}_dvs_activity.txt'.format(base_results_path), data)
 
         elif key == 'burst_detected':
             save_score('{}_burst_detected.txt'.format(base_results_path), data)
+
+        elif key == 'burst_frame_count':
+            save_score('{}_burst_frame_count.txt'.format(base_results_path), data)
 
         elif key == 'time':
             if isinstance(data[0], dict):

@@ -117,11 +117,11 @@ class Tracker:
         # time[i] is either the processing time for frame i, or an OrderedDict containing processing times for each
         # object in frame i
 
-        output = {'target_bbox': [], 'time': [], 'blind_frames': [], 'genuine_blind_frames': [],
-                  'event_density': [], 'event_density_ema': [], 'event_spike': [], 'pred_score': [],
+        output = {'target_bbox': [], 'time': [], 'blind_frames': [],
+                  'event_density': [], 'event_density_ema': [], 'pred_score': [],
                   'box_displacement': [], 'norm_displacement': [], 'displacement_ema': [],
-                  'response_entropy': [], 'failure_count': [],
-                  'dvs_activity': [], 'burst_detected': []}
+                  'response_entropy': [],
+                  'dvs_activity': [], 'burst_detected': [], 'burst_frame_count': []}
 
         def _store_outputs(tracker_out: dict, defaults=None):
             defaults = {} if defaults is None else defaults

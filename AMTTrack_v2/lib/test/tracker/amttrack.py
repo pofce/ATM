@@ -87,39 +87,24 @@ class AMTTrack(BaseTracker):
         self.motion_model = KalmanMotionModel()
         self.motion_model.update(self.state)
 
-        # diagnostic / failure-signal state — all reset per sequence
+        # diagnostic / signal state — all reset per sequence
         self.blind_frames_count = 0    # consecutive frames below score threshold (diagnostic)
-        self.genuine_blind_count = 0   # consecutive frames where score crashed vs EMA (search widening)
-        self.score_ema = None
         self.event_density_ema = None
         self.prev_state = None         # state from previous frame (for displacement)
         self.displacement_ema = None   # EMA of normalised displacement
-        self.failure_count = 0         # consecutive failure-signal frames (drives Kalman)
+        self.burst_frame_count = 0     # consecutive burst frames (drives Kalman blind + search widening)
 
 
     def track(self, image, event_image, info: dict = None):
         self.frame_id += 1
         H, W, _ = image.shape
 
-        # ── Phase 2: Kalman blind flag uses failure_count from the previous frame ──
-        blind = (self.use_motion_model
-                 and self.cfg.TEST.KALMAN_MIN_BLIND <= self.failure_count <= self.cfg.TEST.KALMAN_MAX_BLIND)
-
-        # ── Search widening: driven by score-EMA genuine_blind_count (unchanged) ──
-        prev_score = (info['previous_output'].get('pred_score', 1.0)
-                      if info and info.get('previous_output') else 1.0)
-        if self.score_ema is None:
-            self.score_ema = prev_score
-        self.score_ema = 0.95 * self.score_ema + 0.05 * prev_score
-        prev_genuine_blind = (info['previous_output'].get('genuine_blind_frames', 0)
-                              if info and info.get('previous_output') else 0)
-        is_crash = prev_score < self.score_ema * self.cfg.TEST.KALMAN_DROP_RATIO
-        genuine_blind_count = prev_genuine_blind + 1 if is_crash else 0
-
-        if self.use_motion_model and genuine_blind_count > self.cfg.TEST.KALMAN_MAX_BLIND:
-            frames_past_max = genuine_blind_count - self.cfg.TEST.KALMAN_MAX_BLIND
+        # ── Search widening: after Kalman expires during a long burst, widen to re-acquire ──
+        # burst_frame_count here is the value from the PREVIOUS frame (updated after sample_target below)
+        frames_over_max = max(0, self.burst_frame_count - self.cfg.TEST.KALMAN_MAX_BLIND)
+        if self.use_motion_model and frames_over_max > 0:
             scale = min(
-                1.0 + (frames_past_max / self.cfg.TEST.KALMAN_MAX_BLIND)
+                1.0 + (frames_over_max / self.cfg.TEST.KALMAN_MAX_BLIND)
                       * (self.cfg.TEST.KALMAN_SEARCH_SCALE_MAX - 1.0),
                 self.cfg.TEST.KALMAN_SEARCH_SCALE_MAX
             )
@@ -130,19 +115,32 @@ class AMTTrack(BaseTracker):
         x_patch_arr, event_x_patch_arr, resize_factor, x_amask_arr = sample_target(im=image, eim=event_image,
             target_bb=self.state, search_area_factor=effective_search_factor, output_sz=self.params.search_size)
 
-        # ── Event density (diagnostic, on raw uint8 crop before normalisation) ──
+        # ── Early burst detection — DVS crop available, compute BEFORE inference ──
+        # dvs_activity = how much brighter-than-background activity is in the crop
+        # High value → flicker burst → tracker output unreliable → use Kalman
+        _dvs_bg_level    = getattr(self.cfg.TEST, 'DVS_BG_LEVEL', 255.0)
+        _burst_threshold = getattr(self.cfg.TEST, 'DVS_BURST_THRESHOLD', 150.0)
         event_density_raw = float(np.abs(event_x_patch_arr.astype(np.float32)).mean())
-        _ema_alpha   = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
-        _spike_ratio = getattr(self.cfg.TEST, 'SPIKE_RATIO', 2.0)
-        _prev_density_ema = self.event_density_ema
+        dvs_activity = max(0.0, _dvs_bg_level - event_density_raw)
+        burst_now    = dvs_activity > _burst_threshold
+        if burst_now:
+            self.burst_frame_count += 1
+        else:
+            self.burst_frame_count = 0
+
+        # Kalman blind: activates IMMEDIATELY on burst (no KALMAN_MIN_BLIND delay),
+        # bounded by KALMAN_MAX_BLIND consecutive burst frames to prevent drift freeze.
+        blind = (self.use_motion_model
+                 and burst_now
+                 and self.burst_frame_count <= self.cfg.TEST.KALMAN_MAX_BLIND)
+
+        # ── Event density EMA (diagnostic) ───────────────────────────────────────
+        _ema_alpha = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
         if self.event_density_ema is None:
             self.event_density_ema = event_density_raw
         else:
             self.event_density_ema = (_ema_alpha * event_density_raw
                                       + (1 - _ema_alpha) * self.event_density_ema)
-        event_spike = (_prev_density_ema is not None
-                       and event_density_raw > _spike_ratio * _prev_density_ema
-                       and _prev_density_ema > 0)
 
         # ── Network inference ────────────────────────────────────────────────────
         search = self.preprocessor.process(x_patch_arr, x_amask_arr).tensors
@@ -181,11 +179,12 @@ class AMTTrack(BaseTracker):
         resp_prob = resp_flat / (resp_flat.sum() + 1e-8)
         response_entropy = float(-(resp_prob * (resp_prob + 1e-8).log()).sum().item())
 
-        # ── Motion model injection (uses blind from top of frame) ────────────────
+        # ── Motion model injection ───────────────────────────────────────────────
         if self.use_motion_model:
             if blind:
                 self.state = clip_box(self.motion_model.predict_only(), H, W, margin=10)
-            else:
+            elif not burst_now:
+                # only feed clean (non-burst) frames into Kalman to preserve velocity estimate
                 self.motion_model.update(self.state)
 
         # ── Box displacement (computed after motion model so we track actual output) ─
@@ -209,29 +208,7 @@ class AMTTrack(BaseTracker):
             self.displacement_ema = (_disp_ema_alpha * norm_displacement
                                      + (1 - _disp_ema_alpha) * self.displacement_ema)
 
-        # ── Phase 2: failure detection → update failure_count for next frame ─────
-        _failure_signal    = getattr(self.cfg.TEST, 'FAILURE_SIGNAL', 'norm_displacement')
-        _failure_threshold = getattr(self.cfg.TEST, 'FAILURE_THRESHOLD', 0.5)
-        _dvs_bg_level      = getattr(self.cfg.TEST, 'DVS_BG_LEVEL', 255.0)
-        _burst_threshold   = getattr(self.cfg.TEST, 'DVS_BURST_THRESHOLD', 150.0)
-
-        if _failure_signal == 'norm_displacement':
-            primary_failure = norm_displacement > _failure_threshold
-        elif _failure_signal == 'response_entropy':
-            primary_failure = response_entropy > _failure_threshold
-        elif _failure_signal == 'displacement_ema':
-            primary_failure = self.displacement_ema > _failure_threshold
-        else:
-            primary_failure = False
-
-        dvs_activity   = max(0.0, _dvs_bg_level - event_density_raw)
-        burst_detected = dvs_activity > _burst_threshold
-        failure_detected = primary_failure or burst_detected
-
-        if failure_detected:
-            self.failure_count += 1
-        else:
-            self.failure_count = 0
+        burst_detected = burst_now  # alias for output dict
 
         self.prev_state = list(self.state)
 
@@ -273,17 +250,15 @@ class AMTTrack(BaseTracker):
                 "response": response,
                 "pred_score": current_score,
                 "blind_frames": self.blind_frames_count,
-                "genuine_blind_frames": genuine_blind_count,
                 "event_density": event_density_raw,
                 "event_density_ema": self.event_density_ema,
-                "event_spike": int(event_spike),
                 "box_displacement": box_displacement,
                 "norm_displacement": norm_displacement,
                 "displacement_ema": self.displacement_ema,
                 "response_entropy": response_entropy,
-                "failure_count": self.failure_count,
                 "dvs_activity": dvs_activity,
                 "burst_detected": int(burst_detected),
+                "burst_frame_count": self.burst_frame_count,
                 }
    
     def get_count(self):
