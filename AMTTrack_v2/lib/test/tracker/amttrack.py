@@ -128,11 +128,11 @@ class AMTTrack(BaseTracker):
         else:
             self.burst_frame_count = 0
 
-        # Kalman blind: activates IMMEDIATELY on burst (no KALMAN_MIN_BLIND delay),
-        # bounded by KALMAN_MAX_BLIND consecutive burst frames to prevent drift freeze.
-        blind = (self.use_motion_model
-                 and burst_now
-                 and self.burst_frame_count <= self.cfg.TEST.KALMAN_MAX_BLIND)
+        # Kalman blind: active for the ENTIRE burst duration — no cap.
+        # Search widening (above) handles re-acquisition after long bursts when
+        # Kalman may have drifted. Running the tracker in burst noise is always
+        # worse than holding the Kalman prediction.
+        blind = self.use_motion_model and burst_now
 
         # ── Event density EMA (diagnostic) ───────────────────────────────────────
         _ema_alpha = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
@@ -248,7 +248,9 @@ class AMTTrack(BaseTracker):
                 "prediction_image": prediction_image,
                 "prediction_event_image": prediction_event_image,
                 "response": response,
-                "pred_score": current_score,
+                # Return score=0.0 during burst so THOR's lower_bound gate (0.35)
+                # rejects burst-noise crops from entering template memory.
+                "pred_score": 0.0 if burst_now else current_score,
                 "blind_frames": self.blind_frames_count,
                 "event_density": event_density_raw,
                 "event_density_ema": self.event_density_ema,
