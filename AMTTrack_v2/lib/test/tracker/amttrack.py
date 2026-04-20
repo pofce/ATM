@@ -183,8 +183,10 @@ class AMTTrack(BaseTracker):
         if self.use_motion_model:
             if blind:
                 self.state = clip_box(self.motion_model.predict_only(), H, W, margin=10)
-            elif not burst_now:
-                # only feed clean (non-burst) frames into Kalman to preserve velocity estimate
+            elif not burst_now and current_score >= self.cfg.TEST.SCORE_THRESHOLD:
+                # only feed high-confidence clean frames into Kalman — low-confidence
+                # clean frames (e.g. failed re-acquisition after long burst) would corrupt
+                # the velocity estimate with a garbage position
                 self.motion_model.update(self.state)
 
         # ── Box displacement (computed after motion model so we track actual output) ─
