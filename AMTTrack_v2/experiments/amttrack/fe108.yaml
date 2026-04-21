@@ -103,7 +103,6 @@ TEST:
   SCORE_THRESHOLD: 0.7
   #############################
   MOTION_MODEL: False
-  KALMAN_MIN_BLIND: 2
   KALMAN_MAX_BLIND: 20
   KALMAN_SEARCH_SCALE_MAX: 3.0
   #############################

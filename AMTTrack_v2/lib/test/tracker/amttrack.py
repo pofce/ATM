@@ -128,15 +128,6 @@ class AMTTrack(BaseTracker):
         else:
             self.burst_frame_count = 0
 
-        # Kalman blind: activates after KALMAN_MIN_BLIND consecutive burst frames.
-        # A small delay (2 frames) lets the tracker handle short single-frame bursts
-        # naturally, avoiding unnecessary Kalman overrides on easy sequences.
-        # No upper cap — Kalman runs for the full burst duration once triggered.
-        _kalman_min_blind = getattr(self.cfg.TEST, 'KALMAN_MIN_BLIND', 2)
-        blind = (self.use_motion_model
-                 and burst_now
-                 and self.burst_frame_count >= _kalman_min_blind)
-
         # ── Event density EMA (diagnostic) ───────────────────────────────────────
         _ema_alpha = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
         if self.event_density_ema is None:
@@ -171,6 +162,14 @@ class AMTTrack(BaseTracker):
         self.state = clip_box(self.map_box_back(pred_box, resize_factor), H, W, margin=10)
 
         current_score = response.max().item()
+
+        # ── Kalman blind: override with motion model prediction when tracker is
+        # both in a burst AND not confident. Score-based condition avoids overriding
+        # on easy sequences where tracker stays high-confidence even during bursts.
+        blind = (self.use_motion_model
+                 and burst_now
+                 and current_score < self.cfg.TEST.SCORE_THRESHOLD)
+
         if current_score < self.cfg.TEST.SCORE_THRESHOLD:
             self.blind_frames_count += 1
         else:
