@@ -119,6 +119,7 @@ cfg.TEST.UPDATE_INTERVAL = 10
 cfg.TEST.LOWER_BOUND = 0.35
 cfg.TEST.SCORE_THRESHOLD = 0.7
 cfg.TEST.MOTION_MODEL = False
+cfg.TEST.KALMAN_MIN_BLIND = 2
 cfg.TEST.KALMAN_MAX_BLIND = 20        # Kalman turns off after this many consecutive burst frames
 cfg.TEST.KALMAN_SEARCH_SCALE_MAX = 3.0  # search_factor scales up to this multiple after Kalman expires
 cfg.TEST.DENSITY_EMA_ALPHA = 0.05    # EMA decay for event density (diagnostic)

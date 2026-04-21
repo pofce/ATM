@@ -128,11 +128,14 @@ class AMTTrack(BaseTracker):
         else:
             self.burst_frame_count = 0
 
-        # Kalman blind: active for the ENTIRE burst duration — no cap.
-        # Search widening (above) handles re-acquisition after long bursts when
-        # Kalman may have drifted. Running the tracker in burst noise is always
-        # worse than holding the Kalman prediction.
-        blind = self.use_motion_model and burst_now
+        # Kalman blind: activates after KALMAN_MIN_BLIND consecutive burst frames.
+        # A small delay (2 frames) lets the tracker handle short single-frame bursts
+        # naturally, avoiding unnecessary Kalman overrides on easy sequences.
+        # No upper cap — Kalman runs for the full burst duration once triggered.
+        _kalman_min_blind = getattr(self.cfg.TEST, 'KALMAN_MIN_BLIND', 2)
+        blind = (self.use_motion_model
+                 and burst_now
+                 and self.burst_frame_count >= _kalman_min_blind)
 
         # ── Event density EMA (diagnostic) ───────────────────────────────────────
         _ema_alpha = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
