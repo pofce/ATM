@@ -163,12 +163,14 @@ class AMTTrack(BaseTracker):
 
         current_score = response.max().item()
 
-        # ── Kalman blind: override with motion model prediction when tracker is
-        # both in a burst AND not confident. Score-based condition avoids overriding
-        # on easy sequences where tracker stays high-confidence even during bursts.
+        # ── Kalman blind: override with Kalman prediction after KALMAN_MIN_BLIND
+        # consecutive burst frames. Short single-frame bursts (common in ball_1hz,
+        # banana) are skipped — tracker handles them fine. Kalman only activates on
+        # sustained bursts (ball_4hz, ball_8hz) where tracker genuinely fails.
+        _kalman_min_blind = getattr(self.cfg.TEST, 'KALMAN_MIN_BLIND', 4)
         blind = (self.use_motion_model
                  and burst_now
-                 and current_score < self.cfg.TEST.SCORE_THRESHOLD)
+                 and self.burst_frame_count >= _kalman_min_blind)
 
         if current_score < self.cfg.TEST.SCORE_THRESHOLD:
             self.blind_frames_count += 1
