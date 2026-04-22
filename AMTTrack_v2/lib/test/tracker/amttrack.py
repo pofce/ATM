@@ -163,14 +163,16 @@ class AMTTrack(BaseTracker):
 
         current_score = response.max().item()
 
-        # ── Kalman blind: override with Kalman prediction after KALMAN_MIN_BLIND
-        # consecutive burst frames. Short single-frame bursts (common in ball_1hz,
-        # banana) are skipped — tracker handles them fine. Kalman only activates on
-        # sustained bursts (ball_4hz, ball_8hz) where tracker genuinely fails.
+        # ── Kalman blind: override with Kalman prediction when burst count is in
+        # [MIN_BLIND, MAX_BLIND]. MIN_BLIND skips short bursts where tracker copes.
+        # MAX_BLIND caps long bursts (e.g. 83-frame d3 run) where velocity error
+        # compounds into catastrophic drift; after MAX_BLIND the tracker takes over
+        # again (aided by search widening).
         _kalman_min_blind = getattr(self.cfg.TEST, 'KALMAN_MIN_BLIND', 4)
+        _kalman_max_blind = getattr(self.cfg.TEST, 'KALMAN_MAX_BLIND', 20)
         blind = (self.use_motion_model
                  and burst_now
-                 and self.burst_frame_count >= _kalman_min_blind)
+                 and _kalman_min_blind <= self.burst_frame_count <= _kalman_max_blind)
 
         if current_score < self.cfg.TEST.SCORE_THRESHOLD:
             self.blind_frames_count += 1
@@ -257,6 +259,7 @@ class AMTTrack(BaseTracker):
                 # Return score=0.0 during burst so THOR's lower_bound gate (0.35)
                 # rejects burst-noise crops from entering template memory.
                 "pred_score": 0.0 if burst_now else current_score,
+                "raw_score": current_score,  # always the true network score, never zeroed
                 "blind_frames": self.blind_frames_count,
                 "event_density": event_density_raw,
                 "event_density_ema": self.event_density_ema,
