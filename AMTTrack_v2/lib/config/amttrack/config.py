@@ -122,13 +122,8 @@ cfg.TEST.MOTION_MODEL = False
 cfg.TEST.KALMAN_MIN_BLIND = 4
 cfg.TEST.KALMAN_MAX_BLIND = 20        # Kalman turns off after this many consecutive burst frames
 cfg.TEST.KALMAN_SEARCH_SCALE_MAX = 3.0  # search_factor scales up to this multiple after Kalman expires
-cfg.TEST.DENSITY_EMA_ALPHA = 0.05    # EMA decay for event density (diagnostic)
-cfg.TEST.DISP_EMA_ALPHA = 0.1        # EMA decay for normalised displacement
 cfg.TEST.DVS_BG_LEVEL = 255.0        # DVS background pixel value (white = 255)
 cfg.TEST.DVS_BURST_THRESHOLD = 150.0 # dvs_activity = BG_LEVEL - event_density_raw; above this = burst
-cfg.TEST.ADAPTIVE_MODALITY = False
-cfg.TEST.EVENT_WEIGHT = 0.5
-cfg.TEST.FAILURE_EVENT_WEIGHT = 0.7
 
 
 def _edict2dict(dest_dict, src_edict):

@@ -84,14 +84,13 @@ class AMTTrack(BaseTracker):
 
         # motion model — initialised here so it resets cleanly per sequence
         self.use_motion_model = getattr(self.cfg.TEST, 'MOTION_MODEL', False)
+        fps = info.get('fps', 1.0)
+        self.frame_dt = 1.0 / fps if fps > 0 else 1.0
         self.motion_model = KalmanMotionModel()
-        self.motion_model.update(self.state)
+        self.motion_model.update(self.state, dt=self.frame_dt)
 
         # diagnostic / signal state — all reset per sequence
-        self.blind_frames_count = 0    # consecutive frames below score threshold (diagnostic)
-        self.event_density_ema = None
-        self.prev_state = None         # state from previous frame (for displacement)
-        self.displacement_ema = None   # EMA of normalised displacement
+        self.prev_state = None         # state from previous frame (for norm_displacement)
         self.burst_frame_count = 0     # consecutive burst frames (drives Kalman blind + search widening)
 
 
@@ -127,14 +126,6 @@ class AMTTrack(BaseTracker):
             self.burst_frame_count += 1
         else:
             self.burst_frame_count = 0
-
-        # ── Event density EMA (diagnostic) ───────────────────────────────────────
-        _ema_alpha = getattr(self.cfg.TEST, 'DENSITY_EMA_ALPHA', 0.05)
-        if self.event_density_ema is None:
-            self.event_density_ema = event_density_raw
-        else:
-            self.event_density_ema = (_ema_alpha * event_density_raw
-                                      + (1 - _ema_alpha) * self.event_density_ema)
 
         # ── Network inference ────────────────────────────────────────────────────
         search = self.preprocessor.process(x_patch_arr, x_amask_arr).tensors
@@ -174,49 +165,28 @@ class AMTTrack(BaseTracker):
                  and burst_now
                  and _kalman_min_blind <= self.burst_frame_count <= _kalman_max_blind)
 
-        if current_score < self.cfg.TEST.SCORE_THRESHOLD:
-            self.blind_frames_count += 1
-        else:
-            self.blind_frames_count = 0
-
-        # ── Response entropy ─────────────────────────────────────────────────────
-        resp_flat = response.view(-1).float()
-        resp_flat = resp_flat - resp_flat.min()
-        resp_prob = resp_flat / (resp_flat.sum() + 1e-8)
-        response_entropy = float(-(resp_prob * (resp_prob + 1e-8).log()).sum().item())
-
         # ── Motion model injection ───────────────────────────────────────────────
         if self.use_motion_model:
             if blind:
-                self.state = clip_box(self.motion_model.predict_only(), H, W, margin=10)
+                self.state = clip_box(self.motion_model.predict_only(dt=self.frame_dt), H, W, margin=10)
             elif not burst_now and current_score >= self.cfg.TEST.SCORE_THRESHOLD:
                 # only feed high-confidence clean frames into Kalman — low-confidence
                 # clean frames (e.g. failed re-acquisition after long burst) would corrupt
                 # the velocity estimate with a garbage position
-                self.motion_model.update(self.state)
+                self.motion_model.update(self.state, dt=self.frame_dt)
 
-        # ── Box displacement (computed after motion model so we track actual output) ─
+        # ── Norm displacement (for signal plots) ─────────────────────────────────
         curr_cx = self.state[0] + self.state[2] / 2
         curr_cy = self.state[1] + self.state[3] / 2
-        target_diag = (self.state[2] ** 2 + self.state[3] ** 2) ** 0.5 + 1e-6
-
         if self.prev_state is None:
-            box_displacement = 0.0
             norm_displacement = 0.0
         else:
             prev_cx = self.prev_state[0] + self.prev_state[2] / 2
             prev_cy = self.prev_state[1] + self.prev_state[3] / 2
-            box_displacement = float(((curr_cx - prev_cx) ** 2 + (curr_cy - prev_cy) ** 2) ** 0.5)
-            norm_displacement = box_displacement / target_diag
+            target_diag = (self.state[2] ** 2 + self.state[3] ** 2) ** 0.5 + 1e-6
+            norm_displacement = float(((curr_cx - prev_cx) ** 2 + (curr_cy - prev_cy) ** 2) ** 0.5) / target_diag
 
-        _disp_ema_alpha = getattr(self.cfg.TEST, 'DISP_EMA_ALPHA', 0.1)
-        if self.displacement_ema is None:
-            self.displacement_ema = norm_displacement
-        else:
-            self.displacement_ema = (_disp_ema_alpha * norm_displacement
-                                     + (1 - _disp_ema_alpha) * self.displacement_ema)
-
-        burst_detected = burst_now  # alias for output dict
+        burst_detected = burst_now
 
         self.prev_state = list(self.state)
 
@@ -260,13 +230,8 @@ class AMTTrack(BaseTracker):
                 # rejects burst-noise crops from entering template memory.
                 "pred_score": 0.0 if burst_now else current_score,
                 "raw_score": current_score,  # always the true network score, never zeroed
-                "blind_frames": self.blind_frames_count,
                 "event_density": event_density_raw,
-                "event_density_ema": self.event_density_ema,
-                "box_displacement": box_displacement,
                 "norm_displacement": norm_displacement,
-                "displacement_ema": self.displacement_ema,
-                "response_entropy": response_entropy,
                 "dvs_activity": dvs_activity,
                 "burst_detected": int(burst_detected),
                 "burst_frame_count": self.burst_frame_count,
