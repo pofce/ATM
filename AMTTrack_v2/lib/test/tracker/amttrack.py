@@ -15,7 +15,6 @@ from lib.test.tracker.data_utils import Preprocessor
 from lib.utils.box_ops import clip_box
 from lib.utils.ce_utils import generate_mask_cond, generate_mask_z
 from lib.models.layers.thor import THOR_Wrapper
-from lib.test.tracker.motion import KalmanMotionModel
 
 
 class AMTTrack(BaseTracker):
@@ -82,41 +81,21 @@ class AMTTrack(BaseTracker):
         self.state = info['init_bbox']
         self.frame_id = idx
 
-        # motion model — initialised here so it resets cleanly per sequence
-        self.use_motion_model = getattr(self.cfg.TEST, 'MOTION_MODEL', False)
-        fps = info.get('fps', 1.0)
-        self.frame_dt = 1.0 / fps if fps > 0 else 1.0
-        self.motion_model = KalmanMotionModel()
-        self.motion_model.update(self.state, dt=self.frame_dt)
-
         # diagnostic / signal state — all reset per sequence
         self.prev_state = None         # state from previous frame (for norm_displacement)
-        self.burst_frame_count = 0     # consecutive burst frames (drives Kalman blind + search widening)
+        self.burst_frame_count = 0     # consecutive burst frames (logged per frame)
 
 
     def track(self, image, event_image, info: dict = None):
         self.frame_id += 1
         H, W, _ = image.shape
 
-        # ── Search widening: after Kalman expires during a long burst, widen to re-acquire ──
-        # burst_frame_count here is the value from the PREVIOUS frame (updated after sample_target below)
-        frames_over_max = max(0, self.burst_frame_count - self.cfg.TEST.KALMAN_MAX_BLIND)
-        if self.use_motion_model and frames_over_max > 0:
-            scale = min(
-                1.0 + (frames_over_max / self.cfg.TEST.KALMAN_MAX_BLIND)
-                      * (self.cfg.TEST.KALMAN_SEARCH_SCALE_MAX - 1.0),
-                self.cfg.TEST.KALMAN_SEARCH_SCALE_MAX
-            )
-            effective_search_factor = self.params.search_factor * scale
-        else:
-            effective_search_factor = self.params.search_factor
-
         x_patch_arr, event_x_patch_arr, resize_factor, x_amask_arr = sample_target(im=image, eim=event_image,
-            target_bb=self.state, search_area_factor=effective_search_factor, output_sz=self.params.search_size)
+            target_bb=self.state, search_area_factor=self.params.search_factor, output_sz=self.params.search_size)
 
         # ── Early burst detection — DVS crop available, compute BEFORE inference ──
         # dvs_activity = how much brighter-than-background activity is in the crop
-        # High value → flicker burst → tracker output unreliable → use Kalman
+        # High value → flicker burst → suppress THOR template update (pred_score=0)
         _dvs_bg_level    = getattr(self.cfg.TEST, 'DVS_BG_LEVEL', 255.0)
         _burst_threshold = getattr(self.cfg.TEST, 'DVS_BURST_THRESHOLD', 150.0)
         event_density_raw = float(np.abs(event_x_patch_arr.astype(np.float32)).mean())
@@ -153,27 +132,6 @@ class AMTTrack(BaseTracker):
         self.state = clip_box(self.map_box_back(pred_box, resize_factor), H, W, margin=10)
 
         current_score = response.max().item()
-
-        # ── Kalman blind: override with Kalman prediction when burst count is in
-        # [MIN_BLIND, MAX_BLIND]. MIN_BLIND skips short bursts where tracker copes.
-        # MAX_BLIND caps long bursts (e.g. 83-frame d3 run) where velocity error
-        # compounds into catastrophic drift; after MAX_BLIND the tracker takes over
-        # again (aided by search widening).
-        _kalman_min_blind = getattr(self.cfg.TEST, 'KALMAN_MIN_BLIND', 4)
-        _kalman_max_blind = getattr(self.cfg.TEST, 'KALMAN_MAX_BLIND', 20)
-        blind = (self.use_motion_model
-                 and burst_now
-                 and _kalman_min_blind <= self.burst_frame_count <= _kalman_max_blind)
-
-        # ── Motion model injection ───────────────────────────────────────────────
-        if self.use_motion_model:
-            if blind:
-                self.state = clip_box(self.motion_model.predict_only(dt=self.frame_dt), H, W, margin=10)
-            elif not burst_now and current_score >= self.cfg.TEST.SCORE_THRESHOLD:
-                # only feed high-confidence clean frames into Kalman — low-confidence
-                # clean frames (e.g. failed re-acquisition after long burst) would corrupt
-                # the velocity estimate with a garbage position
-                self.motion_model.update(self.state, dt=self.frame_dt)
 
         # ── Norm displacement (for signal plots) ─────────────────────────────────
         curr_cx = self.state[0] + self.state[2] / 2

@@ -1,6 +1,5 @@
 import importlib
 import os
-import re
 from collections import OrderedDict
 from lib.test.evaluation.environment import env_settings
 import time
@@ -25,21 +24,6 @@ def init_seeds(seed):
 
 SEED = 3407  # equal with the seed in train.py
 init_seeds(SEED)
-
-
-def _parse_fps_from_seq_name(name: str) -> float:
-    """Extract frame rate (Hz) from FE108 sequence names like 'ball_2hz', 'd3_1:2hz'.
-
-    '1:2hz' is treated as the midpoint (1.5 Hz).  Falls back to 1.0 Hz if no
-    Hz token is found so the Kalman dt defaults to a safe 1-second interval.
-    """
-    m = re.search(r'(\d+):(\d+)hz', name, re.IGNORECASE)
-    if m:
-        return (float(m.group(1)) + float(m.group(2))) / 2.0
-    m = re.search(r'_(\d+)hz', name, re.IGNORECASE)
-    if m:
-        return float(m.group(1))
-    return 1.0
 
 
 def trackerlist(name: str, parameter_name: str, dataset_name: str, run_ids = None, display_name: str = None,
@@ -113,7 +97,6 @@ class Tracker:
 
         # Get init information
         init_info = seq.init_info(0)
-        init_info['fps'] = _parse_fps_from_seq_name(seq.name)
 
         tracker = self.create_tracker(params)
 
