@@ -106,6 +106,12 @@ class AMTTrack(BaseTracker):
         else:
             self.burst_frame_count = 0
 
+        # ── DVS neutralisation during burst ──────────────────────────────────────
+        # Replace DVS crop with neutral gray so APS stream can dominate.
+        # Controlled by cfg.TEST.DVS_NEUTRALISE (default False for backward compat).
+        if burst_now and getattr(self.cfg.TEST, 'DVS_NEUTRALISE', False):
+            event_x_patch_arr = np.full_like(event_x_patch_arr, 128)
+
         # ── Network inference ────────────────────────────────────────────────────
         search = self.preprocessor.process(x_patch_arr, x_amask_arr).tensors
         event_search = self.preprocessor.process(event_x_patch_arr, x_amask_arr).tensors
