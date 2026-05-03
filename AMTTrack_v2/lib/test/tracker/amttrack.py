@@ -129,9 +129,16 @@ class AMTTrack(BaseTracker):
         pred_boxes = self.network.box_head.cal_bbox(response, out_dict['size_map'], out_dict['offset_map'])
         pred_boxes = pred_boxes.view(-1, 4)
         pred_box = (pred_boxes.mean(dim=0) * self.params.search_size / resize_factor).tolist()
-        self.state = clip_box(self.map_box_back(pred_box, resize_factor), H, W, margin=10)
+        new_state = clip_box(self.map_box_back(pred_box, resize_factor), H, W, margin=10)
 
         current_score = response.max().item()
+
+        # ── State freeze during burst ────────────────────────────────────────────
+        # Do not update self.state on burst frames — keeps the search window
+        # anchored to the last clean position, preventing the spatial cascade
+        # where a degraded tracker output re-centres the crop on the burst region.
+        if not burst_now:
+            self.state = new_state
 
         # ── Norm displacement (for signal plots) ─────────────────────────────────
         curr_cx = self.state[0] + self.state[2] / 2
