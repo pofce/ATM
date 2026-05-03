@@ -21,7 +21,10 @@ class AMTTrack(BaseTracker):
     def __init__(self, params, dataset_name):
         super(AMTTrack, self).__init__(params)
         network = build_amttrack(params.cfg, training=False)
-        network.load_state_dict(torch.load(self.params.checkpoint, map_location='cpu', weights_only=False)['net'], strict=True)
+        # strict=False: dvs_quality_proj is zero-initialised in build_amttrack and absent
+        # from checkpoints trained before this change — loading still works correctly
+        # because the zero-init produces no effect, matching the old model's behaviour.
+        network.load_state_dict(torch.load(self.params.checkpoint, map_location='cpu', weights_only=False)['net'], strict=False)
         self.cfg = params.cfg
         self.network = network.cuda()
         self.network.eval()
@@ -116,6 +119,13 @@ class AMTTrack(BaseTracker):
         search = self.preprocessor.process(x_patch_arr, x_amask_arr).tensors
         event_search = self.preprocessor.process(event_x_patch_arr, x_amask_arr).tensors
 
+        # DVS quality scalar: computed from whatever the network actually sees
+        # (post-neutralisation if DVS_NEUTRALISE=True), consistent with training.
+        effective_density = float(np.abs(event_x_patch_arr.astype(np.float32)).mean())
+        effective_activity = max(0.0, _dvs_bg_level - effective_density)
+        dvs_quality_x = torch.tensor([[effective_activity / 255.0]],
+                                      dtype=torch.float32, device='cuda')
+
         with torch.no_grad():
             if len(info['previous_output']) == 0:
                 self.dynamic_zi, self.dynamic_ze = self.thor_wrapper.update(self.static_zi, self.static_ze, 1)
@@ -127,7 +137,8 @@ class AMTTrack(BaseTracker):
             out_dict = self.network.inference(
                 static_zi=self.static_zi, static_ze=self.static_ze,
                 dynamic_zi=self.dynamic_zi, dynamic_ze=self.dynamic_ze,
-                xi=search, xe=event_search)
+                xi=search, xe=event_search,
+                dvs_quality_x=dvs_quality_x)
 
         # ── Response → score → state ─────────────────────────────────────────────
         pred_score_map = out_dict['score_map']
@@ -139,12 +150,7 @@ class AMTTrack(BaseTracker):
 
         current_score = response.max().item()
 
-        # ── State freeze during burst ────────────────────────────────────────────
-        # Do not update self.state on burst frames — keeps the search window
-        # anchored to the last clean position, preventing the spatial cascade
-        # where a degraded tracker output re-centres the crop on the burst region.
-        if not burst_now:
-            self.state = new_state
+        self.state = new_state
 
         # ── Norm displacement (for signal plots) ─────────────────────────────────
         curr_cx = self.state[0] + self.state[2] / 2

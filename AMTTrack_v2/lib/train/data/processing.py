@@ -3,6 +3,7 @@ import torchvision.transforms as transforms
 from lib.utils import TensorDict
 import lib.train.data.processing_utils as prutils
 import torch.nn.functional as F
+import numpy as np
 
 def stack_tensors(x):
     if isinstance(x, (list, tuple)) and isinstance(x[0], torch.Tensor):
@@ -87,13 +88,17 @@ class STARKProcessing(BaseProcessing):
             TensorDict - output data block with following fields:
                 'template_images', 'search_images', 'template_anno', 'search_anno', 'test_proposals', 'proposal_iou'
         """
-        if self.transform['joint'] is not None:  
+        if self.transform['joint'] is not None:
             data['template_images'], data['template_anno'], data['template_masks'] = self.transform['joint'](
                 image=data['template_images'], bbox=data['template_anno'], mask=data['template_masks'])
             data['search_images'], data['search_anno'], data['search_masks'] = self.transform['joint'](
                 image=data['search_images'], bbox=data['search_anno'], mask=data['search_masks'], new_roll=False)
             data['template_event_images'] = self.transform['joint'](image=data['template_event_images'], new_roll=False)
             data['search_event_images'] = self.transform['joint'](image=data['search_event_images'], new_roll=False)
+
+        # ── DVS burst augmentation decision (once per sample) ────────────────────
+        dvs_burst_prob = getattr(self.settings, 'dvs_burst_prob', 0.35)
+        burst_this_sample = np.random.rand() < dvs_burst_prob
 
         for s in ['template', 'search']:
             assert self.mode == 'sequence' or len(data[s + '_images']) == 1, \
@@ -103,17 +108,42 @@ class STARKProcessing(BaseProcessing):
             # 2021.1.9 Check whether data is valid. Avoid too small bounding boxes
             w, h = torch.stack(jittered_anno, dim=0)[:, 2], torch.stack(jittered_anno, dim=0)[:, 3]
 
-            crop_sz = torch.ceil(torch.sqrt(w * h) * self.search_area_factor[s])  
-            if (crop_sz < 1).any(): 
+            crop_sz = torch.ceil(torch.sqrt(w * h) * self.search_area_factor[s])
+            if (crop_sz < 1).any():
                 data['valid'] = False
                 # print("Too small box is found. Replace it with new data.")
                 return data
 
             crops, crops_event, boxes, att_mask, mask_crops = prutils.jittered_center_crop(
-                                                                frames=data[s + '_images'], event_frames=data[s + '_event_images'], 
-                                                                box_extract=jittered_anno, box_gt=data[s + '_anno'], 
-                                                                search_area_factor=self.search_area_factor[s], output_sz=self.output_sz[s], 
+                                                                frames=data[s + '_images'], event_frames=data[s + '_event_images'],
+                                                                box_extract=jittered_anno, box_gt=data[s + '_anno'],
+                                                                search_area_factor=self.search_area_factor[s], output_sz=self.output_sz[s],
                                                                 masks=data[s + '_masks'])
+
+            # ── DVS quality scalar + burst dropout ───────────────────────────────
+            # Apply burst dropout: replace event crop with neutral gray (128) to
+            # simulate burst-frame DVS. For search: always when burst_this_sample.
+            # For template: last frame only, with p=0.5, to approximate contiguous
+            # temporal windows (burst ongoing for multiple frames).
+            crops_event = list(crops_event)
+            if burst_this_sample:
+                if s == 'search':
+                    crops_event = [np.full_like(ep, 128) for ep in crops_event]
+                elif s == 'template' and len(crops_event) > 1 and np.random.rand() < 0.5:
+                    crops_event[-1] = np.full_like(crops_event[-1], 128)
+
+            # Quality scalar: max(0, 255 - mean(|crop|)) / 255
+            # Computed from the crop the network will actually see (post-dropout).
+            # ≈ 0 for clean DVS (high pixel values), ≈ 0.5–0.7 for burst/gray.
+            # Only the search quality is used by the model (template quality is not
+            # passed to avoid training/inference mismatch with THOR pre-embedded tokens).
+            quality_list = [
+                float(max(0.0, 255.0 - np.abs(ep.astype(np.float32)).mean()) / 255.0)
+                for ep in crops_event
+            ]
+            if s == 'search':
+                data[s + '_dvs_quality'] = torch.tensor(quality_list, dtype=torch.float32)
+            # ─────────────────────────────────────────────────────────────────────
 
             data[s + '_images'], data[s + '_anno'], data[s + '_att'], data[s + '_masks'] = self.transform[s](
                 image=crops, bbox=boxes, att=att_mask, mask=mask_crops, joint=False)

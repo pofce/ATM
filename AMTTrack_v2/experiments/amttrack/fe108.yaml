@@ -64,6 +64,7 @@ MODEL:
 TRAIN:
   BACKBONE_MULTIPLIER: 0.1
   DROP_PATH_RATE: 0.1
+  DVS_BURST_PROB: 0.35
   #############################
   BATCH_SIZE: 12 
   #############################

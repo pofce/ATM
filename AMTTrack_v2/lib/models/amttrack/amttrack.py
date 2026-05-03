@@ -31,19 +31,26 @@ class AMTTrack(nn.Module):
         if self.aux_loss:
             self.box_head = _get_clones(self.box_head, 6)
 
-    def forward(self, 
+    def forward(self,
                 zi: torch.Tensor, ze: torch.Tensor, xi: torch.Tensor, xe: torch.Tensor,
+                dvs_quality_z=None, dvs_quality_x=None,
                 mask_z=None, ce_template_mask=None, ce_keep_rate=None,
                 return_last_attn=False,
                 ):
-        static_zi = zi[:, [0], :, :, :]  # shape (B, 1, C, H, W)
-        static_ze = ze[:, [0], :, :, :]  
-        dynamic_zi = zi[:, 1:, :, :, :]  # shape (B, M, C, H, W)  
-        dynamic_ze = ze[:, 1:, :, :, :]   
-        static_zi = self.backbone._z_feat(static_zi)  
-        static_ze = self.backbone._z_feat(static_ze)  
-        dynamic_zi = self.backbone._z_feat(dynamic_zi)  
-        dynamic_ze = self.backbone._z_feat(dynamic_ze)  
+        static_zi = zi[:, [0], :, :, :]   # (B, 1, C, H, W)
+        static_ze = ze[:, [0], :, :, :]
+        dynamic_zi = zi[:, 1:, :, :, :]   # (B, M-1, C, H, W)
+        dynamic_ze = ze[:, 1:, :, :, :]
+
+        # Quality conditioning is applied to the DVS SEARCH stream only.
+        # Templates are always clean (THOR suppression rejects burst-frame updates),
+        # and THOR returns pre-embedded dynamic tokens that never had quality applied —
+        # injecting quality here would create a training/inference mismatch for
+        # dynamic templates. Keeping templates unconditional avoids this.
+        static_zi  = self.backbone._z_feat(static_zi)
+        static_ze  = self.backbone._z_feat(static_ze)
+        dynamic_zi = self.backbone._z_feat(dynamic_zi)
+        dynamic_ze = self.backbone._z_feat(dynamic_ze)
 
         # memory
         if self.memory is not None:
@@ -52,9 +59,9 @@ class AMTTrack(nn.Module):
         xi = xi.squeeze(1)
         xe = xe.squeeze(1)
         xi = self.backbone._x_feat(xi)
-        xe = self.backbone._x_feat(xe)
+        xe = self.backbone._x_feat(xe, dvs_quality_x)
 
-        x, aux_dict = self.backbone(static_zi=static_zi, static_ze=static_ze, 
+        x, aux_dict = self.backbone(static_zi=static_zi, static_ze=static_ze,
                                     dynamic_zi=dynamic_zi, dynamic_ze=dynamic_ze,
                                     xi=xi, xe=xe,
                                     mask_z=mask_z, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
@@ -68,23 +75,25 @@ class AMTTrack(nn.Module):
         out['backbone_feat'] = x
         return out  
 
-    def inference(self, 
-                static_zi: torch.Tensor, static_ze: torch.Tensor, 
+    def inference(self,
+                static_zi: torch.Tensor, static_ze: torch.Tensor,
                 dynamic_zi: torch.Tensor, dynamic_ze: torch.Tensor,
                 xi: torch.Tensor, xe: torch.Tensor,
+                dvs_quality_x=None,
                 mask_z=None, ce_template_mask=None, ce_keep_rate=None,
                 return_last_attn=False,
                 ):
-        static_zi = self.backbone._z_feat(static_zi.unsqueeze(1))  
-        static_ze = self.backbone._z_feat(static_ze.unsqueeze(1))  
+        # Templates are always from clean (non-burst) frames at inference — no quality needed.
+        static_zi = self.backbone._z_feat(static_zi.unsqueeze(1))
+        static_ze = self.backbone._z_feat(static_ze.unsqueeze(1))
 
         xi = self.backbone._x_feat(xi)
-        xe = self.backbone._x_feat(xe)
+        xe = self.backbone._x_feat(xe, dvs_quality_x)
 
         x, aux_dict = self.backbone(static_zi=static_zi, static_ze=static_ze,
                                     dynamic_zi=dynamic_zi, dynamic_ze=dynamic_ze,
                                     xi=xi, xe=xe,
-                                    mask_z=mask_z, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate, 
+                                    mask_z=mask_z, ce_template_mask=ce_template_mask, ce_keep_rate=ce_keep_rate,
                                     return_last_attn=return_last_attn)
 
         feat_last = x

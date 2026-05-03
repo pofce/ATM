@@ -120,6 +120,10 @@ cfg.TEST.LOWER_BOUND = 0.35
 cfg.TEST.SCORE_THRESHOLD = 0.7
 cfg.TEST.DVS_BG_LEVEL = 255.0        # DVS background pixel value (white = 255)
 cfg.TEST.DVS_BURST_THRESHOLD = 150.0 # dvs_activity = BG_LEVEL - event_density_raw; above this = burst
+cfg.TEST.DVS_NEUTRALISE = False      # replace DVS crop with gray during burst (inference-time ablation)
+
+# DVS burst dropout augmentation (training)
+cfg.TRAIN.DVS_BURST_PROB = 0.35      # per-sample probability of applying burst augmentation to search DVS
 
 
 def _edict2dict(dest_dict, src_edict):

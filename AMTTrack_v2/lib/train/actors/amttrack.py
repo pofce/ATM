@@ -63,7 +63,15 @@ class AMTTrackActor(BaseActor):
                                                 ITERS_PER_EPOCH=1,
                                                 base_keep_rate=self.cfg.MODEL.BACKBONE.CE_KEEP_RATIO[0])
                                                 
+        # DVS quality scalar for search only — same batch-second convention as images.
+        # DataLoader gives (1, B); permute to (B, 1).
+        # Template quality is intentionally not used (see AMTTrack.forward comment).
+        dvs_quality_x = data.get('search_dvs_quality', None)
+        if dvs_quality_x is not None:
+            dvs_quality_x = dvs_quality_x.permute(1, 0)   # (1, B) → (B, 1)
+
         out_dict = self.net(zi=zi, ze=ze, xi=xi, xe=xe,
+                            dvs_quality_x=dvs_quality_x,
                             mask_z=mask_z, ce_template_mask=box_mask_z, ce_keep_rate=ce_keep_rate,
                             return_last_attn=False,)
         return out_dict

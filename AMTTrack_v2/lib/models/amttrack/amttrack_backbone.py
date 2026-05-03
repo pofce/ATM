@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from .vit import VisionTransformer
 from lib.models.layers.hflayers import Hopfield
 
@@ -12,7 +13,15 @@ class AMTTrackBackBone(VisionTransformer):
 
     def finetune_track(self, cfg, patch_start_index=1):
         super().finetune_track(cfg, patch_start_index)
-        self._init_hopfield(cfg.MODEL.MEMORY)   
+        self._init_hopfield(cfg.MODEL.MEMORY)
+        self._init_dvs_quality()
+
+    def _init_dvs_quality(self):
+        # Projects scalar DVS quality ∈ [0,1] → embedding vector added to all DVS tokens.
+        # Zero-init: no effect at the start of training; influence grows from gradient.
+        self.dvs_quality_proj = nn.Linear(1, self.embed_dim, bias=True)
+        nn.init.zeros_(self.dvs_quality_proj.weight)
+        nn.init.zeros_(self.dvs_quality_proj.bias)
     
     def _init_hopfield(self, memory_dict):
         self.memory_dict = memory_dict
@@ -36,17 +45,27 @@ class AMTTrackBackBone(VisionTransformer):
             dropout=0.1,
         )
     
-    def _z_feat(self, zi):
-        B, M, C, H, W = zi.size()  
+    def _z_feat(self, zi, dvs_quality_z=None):
+        B, M, C, H, W = zi.size()
         zi = zi.reshape(-1, C, H, W)
-        zi = self.patch_embed(zi)  
-        zi += self.pos_embed_z  
-        zi = zi.reshape(B, M*self.zs, self.embed_dim)
+        zi = self.patch_embed(zi)   # (B*M, L_z, embed_dim)
+        zi += self.pos_embed_z
+        if dvs_quality_z is not None:
+            # dvs_quality_z: (B, M) → (B*M, 1) → project → (B*M, embed_dim)
+            q = dvs_quality_z.reshape(B * M, 1).to(zi.device, dtype=zi.dtype)
+            q_emb = self.dvs_quality_proj(q)        # (B*M, embed_dim)
+            zi = zi + q_emb.unsqueeze(1)            # broadcast over L_z tokens
+        zi = zi.reshape(B, M * self.zs, self.embed_dim)
         return zi
 
-    def _x_feat(self, xi):
-        xi = self.patch_embed(xi)  
-        xi += self.pos_embed_x  
+    def _x_feat(self, xi, dvs_quality_x=None):
+        xi = self.patch_embed(xi)   # (B, L_x, embed_dim)
+        xi += self.pos_embed_x
+        if dvs_quality_x is not None:
+            # dvs_quality_x: (B, 1) → project → (B, embed_dim)
+            q = dvs_quality_x.reshape(-1, 1).to(xi.device, dtype=xi.dtype)
+            q_emb = self.dvs_quality_proj(q)        # (B, embed_dim)
+            xi = xi + q_emb.unsqueeze(1)            # broadcast over L_x tokens
         return xi
     
     def _amah(self, x, i, lens_z):
